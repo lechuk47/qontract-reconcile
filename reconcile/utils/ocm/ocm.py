@@ -89,6 +89,7 @@ SPEC_ATTR_MULTI_AZ = "multi_az"
 SPEC_ATTR_HYPERSHIFT = "hypershift"
 SPEC_ATTR_SUBNET_IDS = "subnet_ids"
 SPEC_ATTR_AVAILABILITY_ZONES = "availability_zones"
+SPEC_ATTR_OIDC_CONFIG = "oidc_config"
 
 SPEC_ATTR_NETWORK = "network"
 
@@ -329,7 +330,15 @@ class OCMProductRosa(OCMProduct):
 
     @staticmethod
     def create_cluster(ocm: OCM, name: str, cluster: OCMSpec, dry_run: bool):
-        ocm_spec = OCMProductRosa._get_create_cluster_spec(name, cluster)
+
+        if isinstance(cluster.spec, ROSAClusterSpec):
+            oidc_config = ocm.create_managed_oidc_provider(
+                dry_run=dry_run,
+            )
+
+        ocm_spec = OCMProductRosa._get_create_cluster_spec(
+            name, cluster, oidc_config["id"]
+        )
         api = f"{CS_API_BASE}/v1/clusters"
         params = {}
         if dry_run:
@@ -406,6 +415,9 @@ class OCMProductRosa(OCMProduct):
             hypershift=cluster["hypershift"]["enabled"],
             subnet_ids=cluster["aws"].get("subnet_ids"),
             availability_zones=cluster["nodes"].get("availability_zones"),
+            # Some clusters might not have an OIDC_CONFIG if they were created before
+            # BYO oidc_config was introduced
+            oidc_config=cluster["aws"]["sts"].get("oidc_config", {}).get("id"),
         )
 
         network = OCMClusterNetwork(
@@ -428,7 +440,10 @@ class OCMProductRosa(OCMProduct):
         return ocm_spec
 
     @staticmethod
-    def _get_create_cluster_spec(cluster_name: str, cluster: OCMSpec) -> dict[str, Any]:
+    def _get_create_cluster_spec(
+         cluster_name: str, cluster: OCMSpec, oidc_config_id: str
+    ) -> dict[str, Any]:
+
         operator_roles_prefix = "".join(
             "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
         )
@@ -487,6 +502,7 @@ class OCMProductRosa(OCMProduct):
                             "worker_role_arn": cluster.spec.account.rosa.worker_role_arn,
                         },
                         "operator_role_prefix": f"{cluster_name}-{operator_roles_prefix}",
+                        "oidc_config": {"id": oidc_config_id},
                     },
                 },
             }
@@ -1554,6 +1570,17 @@ class OCM:  # pylint: disable=too-many-public-methods
                 re.compile(b)
             except re.error:
                 raise TypeError(f"blocked version is not a valid regex expression: {b}")
+
+    def create_managed_oidc_provider(self, dry_run=False):
+        req: dict[str, Any] = {
+            "managed": True,
+        }
+        api = f"{CS_API_BASE}/v1/oidc_configs"
+        params = {}
+        if dry_run:
+            params["dryRun"] = "true"
+
+        return self._post(api, req, params)
 
     @retry(max_attempts=10)
     def _do_get_request(self, api: str, params: Mapping[str, str]) -> dict[str, Any]:

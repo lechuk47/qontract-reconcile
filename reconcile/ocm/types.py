@@ -77,6 +77,7 @@ class ROSAClusterSpec(OCMClusterSpec):
     account: ROSAClusterAWSAccount
     subnet_ids: Optional[list[str]]
     availability_zones: Optional[list[str]]
+    oidc_config: Optional[str]
 
     class Config:
         extra = Extra.forbid

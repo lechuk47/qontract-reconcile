@@ -12,7 +12,7 @@ from reconcile import (
     mr_client_gateway,
     queries,
 )
-from reconcile.ocm.types import OCMSpec
+from reconcile.ocm.types import OCMSpec, ROSAClusterSpec
 from reconcile.status import ExitCodes
 from reconcile.utils.disabled_integrations import integration_is_enabled
 from reconcile.utils.semver_helper import parse_semver
@@ -177,6 +177,18 @@ def get_app_interface_spec_updates(
         )
         if desired_spec.elb_fqdn != elb_fqdn:
             root_updates[ocmmod.SPEC_ATTR_ELBFQDN] = elb_fqdn
+
+    # ROSA Specific updates
+    if isinstance(current_spec.spec, ROSAClusterSpec) and isinstance(
+         desired_spec.spec, ROSAClusterSpec
+    ):
+        if (
+            current_spec.spec.oidc_config
+            and desired_spec.spec.oidc_config != current_spec.spec.oidc_config
+        ):
+            ocm_spec_updates[
+                ocmmod.SPEC_ATTR_OIDC_CONFIG
+            ] = current_spec.spec.oidc_config
 
     updates: dict[str, Any] = {}
     updates[ocmmod.SPEC_ATTR_PATH] = "data" + str(desired_spec.path)
