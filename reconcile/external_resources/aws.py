@@ -28,7 +28,9 @@ class AWSResourceFactory(ABC):
 
 class AWSDefaultResourceFactory(AWSResourceFactory):
     def resolve(self, spec: ExternalResourceSpec) -> dict[str, Any]:
-        return ResourceValueResolver(spec=spec, identifier_as_value=True).resolve()
+        data = ResourceValueResolver(spec=spec, identifier_as_value=True).resolve()
+        data["output_prefix"] = spec.output_prefix
+        return data
 
     def validate(self, resource: ExternalResource) -> None: ...
 
