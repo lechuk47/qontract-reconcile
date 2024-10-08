@@ -26,6 +26,7 @@ from reconcile.gql_definitions.external_resources.external_resources_namespaces 
     NamespaceTerraformProviderResourceAWSV1,
     NamespaceTerraformResourceMskV1,
     NamespaceTerraformResourceRDSV1,
+    NamespaceTerraformResourceS3V1,
     NamespaceV1,
 )
 from reconcile.utils.exceptions import FetchResourceError
@@ -68,7 +69,9 @@ class ExternalResourceKey(BaseModel, frozen=True):
 
 SUPPORTED_RESOURCE_PROVIDERS = NamespaceTerraformProviderResourceAWSV1
 SUPPORTED_RESOURCE_TYPES = (
-    NamespaceTerraformResourceRDSV1 | NamespaceTerraformResourceMskV1
+    NamespaceTerraformResourceRDSV1
+    | NamespaceTerraformResourceMskV1
+    | NamespaceTerraformResourceS3V1
 )
 
 
