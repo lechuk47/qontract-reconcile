@@ -47,6 +47,8 @@ class ObjectFactory(Generic[T]):
         self._factories[id] = t
 
     def get_factory(self, id: str) -> T:
+        if id not in self._factories:
+            id = "default"
         return self._factories[id]
 
 
