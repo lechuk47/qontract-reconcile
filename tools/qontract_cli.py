@@ -4208,16 +4208,19 @@ def request_reconciliation(ctx):
     help="Skip/Do not skip the terraform and CDKTF builds. Default: build everything!",
     default=False,
 )
+@click.option(
+    "--skip-terraform-build/--no-skip-terraform-build",
+    help="Skip/Do not skip the terraform . Default: build everything!",
+    default=False,
+)
 @click.pass_context
-def migrate(ctx, dry_run: bool, skip_build: bool) -> None:
+def migrate(ctx, dry_run: bool, skip_build: bool, skip_terraform_build: bool) -> None:
     """Migrate an existing external resource managed by terraform-resources to ERv2.
 
 
     E.g: qontract-reconcile --config=<config> external-resources migrate aws app-sre-stage rds dashdotdb-stage
     """
-    if ctx.obj["provider"] == "rds":
-        # The "random_password" is not an AWS resource. It's just in the outputs and can't be migrated :(
-        raise NotImplementedError("RDS migration is not supported yet!")
+    # raise NotImplementedError("RDS migration is not supported yet!")
 
     if not Confirm.ask(
         dedent("""
@@ -4233,7 +4236,7 @@ def migrate(ctx, dry_run: bool, skip_build: bool) -> None:
     tempdir = Path.home() / ".erv2-migration"
     rich_print(f"Using temporary directory: [b]{tempdir}[/]")
     tempdir.mkdir(exist_ok=True)
-    temp_erv2 = Path(tempdir) / "erv2"
+    temp_erv2 = Path(tempdir) / ctx.obj["identifier"]
     temp_erv2.mkdir(exist_ok=True)
     temp_tfr = tempdir / "terraform-resources"
     temp_tfr.mkdir(exist_ok=True)
@@ -4277,7 +4280,7 @@ def migrate(ctx, dry_run: bool, skip_build: bool) -> None:
         ):
             # build the terraform-resources output
             conf_tf = temp_tfr / "conf.tf.json"
-            if not skip_build:
+            if not skip_terraform_build:
                 tfr.run(
                     dry_run=True,
                     print_to_file=str(conf_tf),
@@ -4294,17 +4297,24 @@ def migrate(ctx, dry_run: bool, skip_build: bool) -> None:
             tfr_tf_cli = TerraformCli(
                 temp_tfr, dry_run=dry_run, progress_spinner=progress
             )
-            if not skip_build:
+            if not skip_terraform_build:
                 tfr_tf_cli.init()
 
     with progress_spinner() as progress:
         # start a new spinner instance for clean output
         erv2_tf_cli.progress_spinner = progress
+        tfr_tf_cli.progress_spinner = progress
         with task(
             progress,
             "Migrating the resources from terraform-resources to ERv2",
         ):
-            erv2_tf_cli.migrate_resources(source=tfr_tf_cli)
+            if ctx.obj["provider"] == "rds":
+                erv2_tf_cli.migrate_rds(
+                    source=tfr_tf_cli, identifier=ctx.obj["identifier"]
+                )
+            else:
+                print("TESting RDS")
+                # erv2_tf_cli.migrate_resources(source=tfr_tf_cli)
 
     rich_print(f"[b red]Please remove the temporary directory ({tempdir}) manually!")
 

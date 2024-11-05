@@ -169,7 +169,7 @@ def run(
                     logging.error("ExternalResourceKey: %s, Error: %s" % (k, e))
         else:
             publish_metrics(er_mgr.er_inventory, QONTRACT_INTEGRATION)
-            er_mgr.handle_resources()
+            er_mgr.handle_resources()  # Throws exception?
 
 
 def early_exit_desired_state(*args: Any, **kwargs: Any) -> dict[str, Any]:
