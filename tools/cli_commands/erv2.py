@@ -292,6 +292,7 @@ class Change(BaseModel):
 class TfResource(BaseModel):
     address: str
     change: Change | None = None
+    data: dict
 
     @property
     def id(self) -> str:
@@ -389,9 +390,9 @@ class TerraformCli:
         with task(self.progress_spinner, "-- Running terraform init"):
             self._tf_run(self._path, ["init"])
 
-    def _tf_plan(self) -> None:
+    def _tf_plan(self, output: str = "plan.out") -> None:
         with task(self.progress_spinner, "-- Running terraform plan"):
-            self._tf_run(self._path, ["plan", "-out=plan.out"])
+            self._tf_run(self._path, ["plan", f"-out={output}"])
 
     def _tf_state_pull(self) -> None:
         with task(self.progress_spinner, "-- Retrieving the terraform state"):
@@ -424,22 +425,38 @@ class TerraformCli:
         # and pull the state file again
         self._tf_state_pull()
 
+    def _tf_state_rm(self, address: str) -> None:
+        with task(self.progress_spinner, f"-- Removing {address} from the state"):
+            if not self._dry_run:
+                # self._tf_run(self._path, ["state", "rm", address])
+                print("BLA")
+
     def upload_state(self) -> None:
         self._tf_state_push()
 
-    def resource_changes(self, action: TfAction) -> TfResourceList:
+    def state_resources(self) -> dict:
+        with open(self.state_file) as f:
+            state_data = json.load(f)
+        return state_data
+
+    def resource_changes(self, action: TfAction | set[TfAction]) -> TfResourceList:
         """Get the resource changes."""
+        valid_actions = (
+            {action.value}
+            if isinstance(action, TfAction)
+            else {a.value for a in action}
+        )
         plan = json.loads(self._tf_run(self._path, ["show", "-json", "plan.out"]))
         return TfResourceList(
             resources=[
-                TfResource(
-                    address=r["address"],
-                    change=Change(**r["change"]),
-                )
+                TfResource(address=r["address"], data=r)
                 for r in plan["resource_changes"]
-                if action.value.lower() in r["change"]["actions"]
+                if valid_actions == set(r["change"]["actions"])
             ]
         )
+
+    def resource_changes_with_replacement(self, plan_file: str) -> TfResourceList:
+        return self.resource_changes(action={TfAction.DESTROY, TfAction.DESTROY})
 
     def move_resource(
         self, source_state_file: Path, source: TfResource, destination: TfResource
@@ -551,6 +568,212 @@ class TerraformCli:
             )
         self.commit(source)
 
+    def import_resource(self, address: str, value: str) -> None:
+        """Move the resource from source state file to destination state file."""
+        if self.progress_spinner:
+            self.progress_spinner.log(
+                f"-- Importing resource {address} {'[b red](DRY-RUN)' if self._dry_run else ''}"
+            )
+        if not self._dry_run:
+            self._tf_run(
+                self._path,
+                [
+                    "import",
+                    f"{address}",
+                    f"{value}",
+                ],
+            )
+
+    def _rds_import_password_set_keepers(
+        self,
+        rds_name: str,
+        rds_password_addr: str,
+        rds_password_value: str,
+    ) -> None:
+        """Convinient function to update the random password keepers attribute"""
+        self._tf_state_pull()
+        with open(self.state_file, encoding="utf-8") as f:
+            state_data = json.load(f)
+
+        state_data["serial"] += 1
+        state_password_obj = next(
+            r for r in state_data["resources"] if r["name"] == f"{rds_name}-password"
+        )
+
+        # Set the keepers attribute. Either to the current value or to ""
+        rds_password_obj = self.resource_changes(
+            TfAction.CREATE
+        ).get_resource_by_address(rds_password_addr)
+
+        if rds_password_obj:
+            reset_password = (
+                rds_password_obj.data.get("change", {})
+                .get("after", {})
+                .get("keepers", {})
+                .get("reset_password", "")
+            )
+            state_password_obj["instances"][0]["attributes"]["keepers"] = {
+                "reset_password": reset_password
+            }
+
+        # Set the password to the RDS object
+        state_rds_obj = next(
+            r for r in state_data["resources"] if r["name"] == f"{rds_name}"
+        )
+        state_rds_obj["instances"][0]["attributes"]["password"] = rds_password_value
+
+        # Write the state,
+        with open(self.state_file, mode="w", encoding="utf-8") as f:
+            json.dump(state_data, f, indent=2)
+
+        # Save the state
+        self._tf_state_push()
+
+    def _rds_import_password(self, source: TerraformCli, rds_name: str) -> None:
+        rds_password_addr = f"random_password.{rds_name}-password"
+
+        # Get the RDS object from the terraform-resources state.
+        # As it comtes from the state, this object contains all the attributes including the current password
+        tf_resources_state_rds_obj = [
+            r
+            for r in source.state_resources()["resources"]
+            if r["type"] == "aws_db_instance" and r["name"] == rds_name
+        ]
+
+        rds_password_value = tf_resources_state_rds_obj[0]["instances"][0][
+            "attributes"
+        ]["password"]
+
+        # Import the random password object with the current password.
+        rds_password_addr = f"random_password.{rds_name}-password"
+        self.import_resource(rds_password_addr, rds_password_value)
+
+        # We don't want the password to get updated so keepers must be set.
+        # Unfortunately, the only way right now is changing the state directly.
+        if not self._dry_run:
+            self._rds_import_password_set_keepers(
+                rds_name, rds_password_addr, rds_password_value
+            )
+
+    def _rds_import_enhanced_monitoring_role(self, rds_name: str) -> None:
+        # If there is an enhanced-monitoring-role. import it
+        role_name = f"{rds_name}-enhanced-monitoring"
+        em_role = next(
+            (
+                r
+                for r in self.resource_changes(TfAction.CREATE).get_resources_by_type(
+                    "aws_iam_role"
+                )
+                if r.data["name"] == role_name
+            ),
+            None,
+        )
+        if not em_role:
+            return
+
+        # If the role exists. Import it
+        self.import_resource(em_role.address, role_name)
+
+        # Import the policy attachment too.
+        role_attachment_name = f"{rds_name}-policy-attachment"
+        role_attachment_addr = f"aws_iam_role_policy_attachment.{role_attachment_name}"
+        role_attachment_value = f"{role_name}/arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
+        self.import_resource(role_attachment_addr, role_attachment_value)
+
+    def _remove_from_old_state(
+        self,
+        rds_name: str,
+        new_resources: TfResourceList,
+        old_resources: TfResourceList,
+    ) -> None:
+        # Check a plan does not replace anything
+        to_remove_from_old_state: set[str] = set()
+        # Remove aws_db_instance
+        # Address should match
+        rds_address = f"aws_db_instance.{rds_name}"
+        old_instance = old_resources.get_resource_by_address(rds_address)
+        assert old_instance is not None
+        to_remove_from_old_state.add(old_instance.address)
+
+        # Remove parameter groups
+        # New pgs' can be named:
+        # {db_identifier}-{pg}
+        # {db_identifier}-{pg_name}
+        # Old pgs' can be named
+        # {pg_name}
+        # {pg_identifier} <-- this can not be known
+        # Let's remove the parameter group assigned to the instance
+        old_instance_pg_name = old_instance.data["change"]["before"][
+            "parameter_group_name"
+        ]
+        old_instance_pg = old_resources.get_resource_by_address(
+            f"aws_db_parameter_group.{old_instance_pg_name}"
+        )
+        if old_instance_pg:
+            to_remove_from_old_state.add(old_instance_pg.address)
+
+        # Remove enhanced-monitoring role
+        em_role_addr = f"aws_iam_role.{rds_name}-enhanced-monitoring"
+        old_em_role = old_resources.get_resource_by_address(em_role_addr)
+        if old_em_role:
+            to_remove_from_old_state.add(em_role_addr)
+
+        # Remove enhanced-monitoring role policy attachment
+        em_role_att_addr = (
+            f"aws_iam_role_policy_attachment.{rds_name}-enhanced-monitoring"
+        )
+        old_em_role_att = old_resources.get_resource_by_address(em_role_att_addr)
+        if old_em_role_att:
+            to_remove_from_old_state.add(em_role_att_addr)
+
+        for address in to_remove_from_old_state:
+            print(address)
+
+    def migrate_rds(self, source: TerraformCli, identifier: str) -> None:
+        """Migrate rds resources."""
+        # source_resources = source.resource_changes(TfAction.DESTROY)
+        new_resources = self.resource_changes(TfAction.CREATE)
+        old_resources = source.resource_changes(TfAction.DESTROY)
+
+        rds_name = identifier
+        rds_address = f"aws_db_instance.{rds_name}"
+        # rds_obj = next(iter(new_resources._get_resources_by_type("aws_db_instance")))
+        # rds_name = rds_obj.data["name"]
+        if new_resources.get_resource_by_address(rds_address):
+            # import the RDS object. The name matches with the tf_resources one.
+            self.import_resource(rds_address, rds_name)
+
+        password_address = f"random_password.{rds_name}-password"
+        if new_resources.get_resource_by_address(password_address):
+            # import the password
+            self._rds_import_password(source, rds_name)
+
+        em_role_address = f"aws_iam_role.{rds_name}-enhanced-monitoring"
+        if new_resources.get_resource_by_address(em_role_address):
+            # Import the enhanced monitoring Role
+            self._rds_import_enhanced_monitoring_role(rds_name)
+
+        # Check that the new plan does not replace anything
+        plan_after_importing = "plan_after_importing.out"
+        self._tf_plan(output=plan_after_importing)
+        obj_replacements = self.resource_changes_with_replacement(
+            plan_file=plan_after_importing
+        )
+        if len(obj_replacements):
+            raise Exception("There are objects going to be replaced")
+
+        self._remove_from_old_state(rds_name, new_resources, old_resources)
+
+        # assert (
+        #     len(to_remove_resources._get_resources_by_type("aws_db_parameter_group"))
+        #     < 2
+        # )
+        # assert len(to_remove_resources._get_resources_by_type("aws_db_instance")) == 1
+        # # aws_iam_role.cloud-connector-stage-enhanced-monitoring
+        # # aws_iam_role_policy_attachment.cloud-connector-stage-policy-attachment
+        # # Remove resources from the Terraform-resources state
+        # source._tf_state_rm(rds_obj.address)
+
     def migrate_resources(self, source: TerraformCli) -> None:
         """Migrate the resources from source."""
         # if not self.initialized or not source.initialized:
@@ -569,17 +792,21 @@ class TerraformCli:
                 )
                 rich_print("ERv2:")
                 rich_print(
-                    "\n".join([
-                        f"  {i}: {r.address}"
-                        for i, r in enumerate(destination_resources, start=1)
-                    ])
+                    "\n".join(
+                        [
+                            f"  {i}: {r.address}"
+                            for i, r in enumerate(destination_resources, start=1)
+                        ]
+                    )
                 )
                 rich_print("Terraform:")
                 rich_print(
-                    "\n".join([
-                        f"  {i}: {r.address}"
-                        for i, r in enumerate(source_resources, start=1)
-                    ])
+                    "\n".join(
+                        [
+                            f"  {i}: {r.address}"
+                            for i, r in enumerate(source_resources, start=1)
+                        ]
+                    )
                 )
                 if not Confirm.ask("Would you like to continue anyway?", default=False):
                     return
