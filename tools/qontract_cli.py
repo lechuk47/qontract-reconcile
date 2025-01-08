@@ -18,7 +18,6 @@ from datetime import (
 from operator import itemgetter
 from pathlib import Path
 from statistics import median
-from textwrap import dedent
 from typing import Any
 
 import boto3
@@ -29,7 +28,6 @@ import yaml
 from rich import box
 from rich import print as rich_print
 from rich.console import Console, Group
-from rich.prompt import Confirm
 from rich.table import Table
 from rich.tree import Tree
 
@@ -164,6 +162,7 @@ from tools.cli_commands.cost_report.openshift_cost_optimization import (
 )
 from tools.cli_commands.erv2 import (
     Erv2Cli,
+    LocalBackendHelper,
     TerraformCli,
     progress_spinner,
     task,
@@ -477,14 +476,12 @@ def get_upgrade_policies_data(
             if by_workload:
                 for w, soaking in workload_soaking_upgrades.items():
                     i = item.copy()
-                    i.update(
-                        {
-                            "workload": w,
-                            "soaking_upgrades": soaking_str(
-                                soaking, upgrade_policy, upgradeable_version
-                            ),
-                        }
-                    )
+                    i.update({
+                        "workload": w,
+                        "soaking_upgrades": soaking_str(
+                            soaking, upgrade_policy, upgradeable_version
+                        ),
+                    })
                     results.append(i)
             else:
                 workloads = sorted(upgrade_spec.upgrade_policy.workloads)
@@ -495,14 +492,12 @@ def get_upgrade_policies_data(
                     min_soaks = min(soaks)
                     if not show_only_soaking_upgrades or min_soaks > 0:
                         soaking[v] = min_soaks
-                item.update(
-                    {
-                        "workload": w,
-                        "soaking_upgrades": soaking_str(
-                            soaking, upgrade_policy, upgradeable_version
-                        ),
-                    }
-                )
+                item.update({
+                    "workload": w,
+                    "soaking_upgrades": soaking_str(
+                        soaking, upgrade_policy, upgradeable_version
+                    ),
+                })
                 results.append(item)
 
     return results
@@ -726,23 +721,19 @@ def ocm_addon_upgrade_policies(ctx: click.core.Context) -> None:
                 next_version = (
                     available_upgrades[-1] if len(available_upgrades) > 0 else ""
                 )
-                ocm_output.append(
-                    {
-                        "cluster": spec.cluster.name,
-                        "addon_id": spec.addon.id,
-                        "current_version": spec.current_version,
-                        "schedule": spec.upgrade_policy.schedule,
-                        "sector": spec.upgrade_policy.conditions.sector,
-                        "mutexes": ", ".join(
-                            spec.upgrade_policy.conditions.mutexes or []
-                        ),
-                        "soak_days": spec.upgrade_policy.conditions.soak_days,
-                        "workloads": ", ".join(spec.upgrade_policy.workloads),
-                        "next_version": next_version
-                        if next_version != spec.current_version
-                        else "",
-                    }
-                )
+                ocm_output.append({
+                    "cluster": spec.cluster.name,
+                    "addon_id": spec.addon.id,
+                    "current_version": spec.current_version,
+                    "schedule": spec.upgrade_policy.schedule,
+                    "sector": spec.upgrade_policy.conditions.sector,
+                    "mutexes": ", ".join(spec.upgrade_policy.conditions.mutexes or []),
+                    "soak_days": spec.upgrade_policy.conditions.soak_days,
+                    "workloads": ", ".join(spec.upgrade_policy.workloads),
+                    "next_version": next_version
+                    if next_version != spec.current_version
+                    else "",
+                })
 
     fields = [
         {"key": "cluster", "sortable": True},
@@ -854,14 +845,12 @@ def sd_app_sre_alert_report(
             seconds = round(median(data.elapsed_times))
             median_elapsed = str(timedelta(seconds=seconds))
 
-        table_data.append(
-            {
-                "Alert name": alert_name,
-                "Triggered": str(data.triggered_alerts),
-                "Resolved": str(data.resolved_alerts),
-                "Median time to resolve (h:mm:ss)": median_elapsed,
-            }
-        )
+        table_data.append({
+            "Alert name": alert_name,
+            "Triggered": str(data.triggered_alerts),
+            "Resolved": str(data.resolved_alerts),
+            "Median time to resolve (h:mm:ss)": median_elapsed,
+        })
 
     # TODO(mafriedm, rporres): Fix this
     ctx.obj["options"]["sort"] = False
@@ -994,13 +983,11 @@ def clusters_network(ctx, name):
             # This is a CCS/ROSA cluster.
             # We can access the account directly, without assuming a network-mgmt role
             account = cluster["spec"]["account"]
-            account.update(
-                {
-                    "assume_role": "",
-                    "assume_region": cluster["spec"]["region"],
-                    "assume_cidr": cluster["network"]["vpc"],
-                }
-            )
+            account.update({
+                "assume_role": "",
+                "assume_region": cluster["spec"]["region"],
+                "assume_cidr": cluster["network"]["vpc"],
+            })
         else:
             account = tfvpc._build_infrastructure_assume_role(
                 management_account,
@@ -1049,29 +1036,23 @@ def network_reservations(ctx) -> None:
         if network.parent_network:
             parentAddress = network.parent_network.network_address
         if network.in_use_by and network.in_use_by.vpc:
-            network_table.append(
-                {
-                    "name": network.name,
-                    "network Address": network.network_address,
-                    "parent Network": parentAddress,
-                    "Account Name": network.in_use_by.vpc.account.name,
-                    "Account UID": network.in_use_by.vpc.account.uid,
-                    "Console Login URL": md_link(
-                        network.in_use_by.vpc.account.console_url
-                    ),
-                }
-            )
+            network_table.append({
+                "name": network.name,
+                "network Address": network.network_address,
+                "parent Network": parentAddress,
+                "Account Name": network.in_use_by.vpc.account.name,
+                "Account UID": network.in_use_by.vpc.account.uid,
+                "Console Login URL": md_link(network.in_use_by.vpc.account.console_url),
+            })
         else:
-            network_table.append(
-                {
-                    "name": network.name,
-                    "network Address": network.network_address,
-                    "parent Network": parentAddress,
-                    "Account Name": "Unclaimed network",
-                    "Account UID": "Unclaimed network",
-                    "Console Login URL": "Unclaimed network",
-                }
-            )
+            network_table.append({
+                "name": network.name,
+                "network Address": network.network_address,
+                "parent Network": parentAddress,
+                "Account Name": "Unclaimed network",
+                "Account UID": "Unclaimed network",
+                "Console Login URL": "Unclaimed network",
+            })
     print_output(ctx.obj["options"], network_table, columns)
 
 
@@ -1533,48 +1514,46 @@ def rosa_create_cluster_command(ctx, cluster_name):
             billing_account = aws_api.get_organization_billing_account(account.name)
 
     print(
-        " ".join(
-            [
-                "rosa create cluster",
-                f"--billing-account {billing_account}",
-                f"--cluster-name {cluster.name}",
-                "--sts",
-                ("--private" if cluster.spec.private else ""),
-                ("--hosted-cp" if cluster.spec.hypershift else ""),
-                (
-                    "--private-link"
-                    if cluster.spec.private and not cluster.spec.hypershift
-                    else ""
-                ),
-                (
-                    "--multi-az"
-                    if cluster.spec.multi_az and not cluster.spec.hypershift
-                    else ""
-                ),
-                f"--operator-roles-prefix {cluster.name}",
-                f"--oidc-config-id {cluster.spec.oidc_endpoint_url.split('/')[-1]}",
-                f"--subnet-ids {','.join(cluster.spec.subnet_ids)}",
-                f"--region {cluster.spec.region}",
-                f"--version {cluster.spec.initial_version}",
-                f"--machine-cidr {cluster.network.vpc}",
-                f"--service-cidr {cluster.network.service}",
-                f"--pod-cidr {cluster.network.pod}",
-                "--host-prefix 23",
-                "--replicas 3",
-                f"--compute-machine-type {cluster.machine_pools[0].instance_type}",
-                (
-                    "--disable-workload-monitoring"
-                    if cluster.spec.disable_user_workload_monitoring
-                    else ""
-                ),
-                f"--channel-group {cluster.spec.channel}",
-                (
-                    f"--properties provision_shard_id:{cluster.spec.provision_shard_id}"
-                    if cluster.spec.provision_shard_id
-                    else ""
-                ),
-            ]
-        )
+        " ".join([
+            "rosa create cluster",
+            f"--billing-account {billing_account}",
+            f"--cluster-name {cluster.name}",
+            "--sts",
+            ("--private" if cluster.spec.private else ""),
+            ("--hosted-cp" if cluster.spec.hypershift else ""),
+            (
+                "--private-link"
+                if cluster.spec.private and not cluster.spec.hypershift
+                else ""
+            ),
+            (
+                "--multi-az"
+                if cluster.spec.multi_az and not cluster.spec.hypershift
+                else ""
+            ),
+            f"--operator-roles-prefix {cluster.name}",
+            f"--oidc-config-id {cluster.spec.oidc_endpoint_url.split('/')[-1]}",
+            f"--subnet-ids {','.join(cluster.spec.subnet_ids)}",
+            f"--region {cluster.spec.region}",
+            f"--version {cluster.spec.initial_version}",
+            f"--machine-cidr {cluster.network.vpc}",
+            f"--service-cidr {cluster.network.service}",
+            f"--pod-cidr {cluster.network.pod}",
+            "--host-prefix 23",
+            "--replicas 3",
+            f"--compute-machine-type {cluster.machine_pools[0].instance_type}",
+            (
+                "--disable-workload-monitoring"
+                if cluster.spec.disable_user_workload_monitoring
+                else ""
+            ),
+            f"--channel-group {cluster.spec.channel}",
+            (
+                f"--properties provision_shard_id:{cluster.spec.provision_shard_id}"
+                if cluster.spec.provision_shard_id
+                else ""
+            ),
+        ])
     )
 
 
@@ -2072,13 +2051,11 @@ def quay_mirrors(ctx):
                 url = item["mirror"]["url"]
                 public = item["public"]
 
-                mirrors.append(
-                    {
-                        "repo": f"quay.io/{org_name}/{name}",
-                        "public": public,
-                        "upstream": url,
-                    }
-                )
+                mirrors.append({
+                    "repo": f"quay.io/{org_name}/{name}",
+                    "public": public,
+                    "upstream": url,
+                })
 
     columns = ["repo", "upstream", "public"]
     print_output(ctx.obj["options"], mirrors, columns)
@@ -2394,14 +2371,12 @@ def change_types(ctx) -> None:
             usage_statistics[ss.change_type.name] += nr_files
     data = []
     for ct in change_types:
-        data.append(
-            {
-                "name": ct.name,
-                "description": ct.description,
-                "applicable to": f"{ct.context_type.value} {ct.context_schema or ''}",
-                "# usages": usage_statistics[ct.name],
-            }
-        )
+        data.append({
+            "name": ct.name,
+            "description": ct.description,
+            "applicable to": f"{ct.context_type.value} {ct.context_schema or ''}",
+            "# usages": usage_statistics[ct.name],
+        })
     columns = ["name", "description", "applicable to", "# usages"]
     print_output(ctx.obj["options"], data, columns)
 
@@ -2776,21 +2751,17 @@ def alerts(ctx, file_path):
                 description = rule.get("annotations", {}).get("description")
                 threshold = rule.get("for")
                 if name:
-                    data.append(
-                        {
-                            "name": name,
-                            "summary": "`"
-                            + (summary or message).replace("\n", " ")
-                            + "`"
-                            if summary or message
-                            else "",
-                            "severity": severity,
-                            "threshold": threshold,
-                            "description": "`" + description.replace("\n", " ") + "`"
-                            if description
-                            else "",
-                        }
-                    )
+                    data.append({
+                        "name": name,
+                        "summary": "`" + (summary or message).replace("\n", " ") + "`"
+                        if summary or message
+                        else "",
+                        "severity": severity,
+                        "threshold": threshold,
+                        "description": "`" + description.replace("\n", " ") + "`"
+                        if description
+                        else "",
+                    })
     ctx.obj["options"]["sort"] = False
     data = sorted(data, key=sort_by_threshold)
     data = sorted(data, key=sort_by_severity)
@@ -4263,14 +4234,13 @@ def migrate(ctx, dry_run: bool, skip_build: bool, skip_terraform_build: bool) ->
     """
     # raise NotImplementedError("RDS migration is not supported yet!")
 
-    if not Confirm.ask(
-        dedent("""
-            Please ensure [red]terraform-resources[/] is disabled before proceeding!
-
-            Do you want to proceed?"""),
-        default=True,
-    ):
-        sys.exit(0)
+    # if not Confirm.ask(
+    # dedent("""
+    # Please ensure [red]terraform-resources[/] is disabled before proceeding!
+    # Do you want to proceed?"""),
+    # default=True,
+    # ):
+    # sys.exit(0)
 
     # use a temporary directory in $HOME. The MacOS colima default configuration allows docker mounts from $HOME.
     tempdir = Path.home() / ".erv2-migration"
@@ -4309,9 +4279,11 @@ def migrate(ctx, dry_run: bool, skip_build: bool, skip_terraform_build: bool) ->
             if not skip_build:
                 # build the CDKTF output
                 erv2cli.build_cdktf(credentials_file)
+
             erv2_tf_cli = TerraformCli(
                 temp_erv2, dry_run=dry_run, progress_spinner=progress
             )
+
             if not skip_build:
                 erv2_tf_cli.init()
 
@@ -4334,10 +4306,22 @@ def migrate(ctx, dry_run: bool, skip_build: bool, skip_terraform_build: bool) ->
                     if not line.startswith("#")
                 )
             )
+
+            lbh = LocalBackendHelper(temp_tfr, "conf.tf.json", "state.json")
             tfr_tf_cli = TerraformCli(
-                temp_tfr, dry_run=dry_run, progress_spinner=progress
+                lbh.local_backend_path, dry_run=dry_run, progress_spinner=progress
             )
+
             if not skip_terraform_build:
+                # Original terraform-resources configuration needs to be initialized to get the remote state
+                remote_tr_tf_cli = TerraformCli(
+                    temp_tfr, dry_run=dry_run, progress_spinner=progress
+                )
+                remote_tr_tf_cli.init(plan=False)
+
+                # The local-backend-helper tweaks the original configuration
+                # to use a local backend with the original state file
+                lbh.init()
                 tfr_tf_cli.init()
 
     with progress_spinner() as progress:
@@ -4357,7 +4341,7 @@ def migrate(ctx, dry_run: bool, skip_build: bool, skip_terraform_build: bool) ->
                     source=tfr_tf_cli, identifier=ctx.obj["identifier"]
                 )
             else:
-                print("TESting RDS")
+                print("TeSting RDS")
                 # erv2_tf_cli.migrate_resources(source=tfr_tf_cli)
 
     rich_print(f"[b red]Please remove the temporary directory ({tempdir}) manually!")

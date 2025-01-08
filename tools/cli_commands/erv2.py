@@ -171,20 +171,25 @@ class Erv2Cli:
         input_file.write_text(self.input_data)
 
         # delete previous ERv2 container
-        run(["docker", "rm", "-f", "erv2"], capture_output=True, check=True)
+        # run(["docker", "rm", "-f", "erv2"], capture_output=True, check=True)
+        import random
+        import string
+
+        characters = string.ascii_letters + string.digits
+        name = "".join(random.choice(characters) for _ in range(5))
 
         try:
             cdktf_outdir = "/tmp/cdktf.out"
 
             # run cdktf synth
             with task(self.progress_spinner, "-- Running CDKTF synth"):
-                run(["docker", "pull", self.image], check=True, capture_output=True)
+                # run(["docker", "pull", self.image], check=True, capture_output=True)
                 run(
                     [
                         "docker",
                         "run",
                         "--name",
-                        "erv2",
+                        name,
                         "--mount",
                         f"type=bind,source={input_file!s},target=/inputs/input.json",
                         "--mount",
@@ -208,7 +213,7 @@ class Erv2Cli:
                     [
                         "docker",
                         "cp",
-                        f"erv2:{cdktf_outdir}/stacks/CDKTF/cdk.tf.json",
+                        f"{name}:{cdktf_outdir}/stacks/CDKTF/cdk.tf.json",
                         str(self.temp),
                     ],
                     check=True,
@@ -375,11 +380,12 @@ class TerraformCli:
         self.progress_spinner = progress_spinner
         self.initialized = False
 
-    def init(self) -> None:
+    def init(self, plan: bool = True) -> None:
         """Initialize the terraform modules."""
         self._tf_init()
-        self._tf_plan()
         self._tf_state_pull()
+        if plan:
+            self._tf_plan()
         self.initialized = True
 
     @property
@@ -428,8 +434,7 @@ class TerraformCli:
     def _tf_state_rm(self, address: str) -> None:
         with task(self.progress_spinner, f"-- Removing {address} from the state"):
             if not self._dry_run:
-                # self._tf_run(self._path, ["state", "rm", address])
-                print("BLA")
+                self._tf_run(self._path, ["state", "rm", address])
 
     def upload_state(self) -> None:
         self._tf_state_push()
@@ -575,16 +580,26 @@ class TerraformCli:
                 f"-- Importing resource {address} {'[b red](DRY-RUN)' if self._dry_run else ''}"
             )
         if not self._dry_run:
-            self._tf_run(
-                self._path,
-                [
-                    "import",
-                    f"{address}",
-                    f"{value}",
-                ],
-            )
+            try:
+                self._tf_run(
+                    self._path,
+                    [
+                        "import",
+                        f"{address}",
+                        f"{value}",
+                    ],
+                )
+            except CalledProcessError as e:
+                if "Resource already managed by Terraform" in e.stderr.decode("utf-8"):
+                    # The resource is already managed by terraform
+                    # This can happen if the resource is created by the terraform-resources state
+                    # and the resource is not destroyed yet.
+                    # In this case, we can skip the import.
+                    pass
+                else:
+                    raise
 
-    def _rds_import_password_set_keepers(
+    def _rds_import_password_set_state_attrs(
         self,
         rds_name: str,
         rds_password_addr: str,
@@ -616,6 +631,8 @@ class TerraformCli:
                 "reset_password": reset_password
             }
 
+            state_password_obj["instances"][0]["attributes"]["special"] = False
+
         # Set the password to the RDS object
         state_rds_obj = next(
             r for r in state_data["resources"] if r["name"] == f"{rds_name}"
@@ -630,6 +647,7 @@ class TerraformCli:
         self._tf_state_push()
 
     def _rds_import_password(self, source: TerraformCli, rds_name: str) -> None:
+        print("importing password")
         rds_password_addr = f"random_password.{rds_name}-password"
 
         # Get the RDS object from the terraform-resources state.
@@ -651,7 +669,7 @@ class TerraformCli:
         # We don't want the password to get updated so keepers must be set.
         # Unfortunately, the only way right now is changing the state directly.
         if not self._dry_run:
-            self._rds_import_password_set_keepers(
+            self._rds_import_password_set_state_attrs(
                 rds_name, rds_password_addr, rds_password_value
             )
 
@@ -682,6 +700,7 @@ class TerraformCli:
 
     def _remove_from_old_state(
         self,
+        source: TerraformCli,
         rds_name: str,
         new_resources: TfResourceList,
         old_resources: TfResourceList,
@@ -726,8 +745,15 @@ class TerraformCli:
         if old_em_role_att:
             to_remove_from_old_state.add(em_role_att_addr)
 
-        for address in to_remove_from_old_state:
-            print(address)
+        self.save_to_remove(to_remove_from_old_state)
+        # for address in to_remove_from_old_state:
+        #    source._tf_state_rm(address)
+
+    def save_to_remove(self, to_remove: set[str]) -> None:
+        """Save the resources to remove to a file."""
+        to_remove_file = self._path / "tr-to-remove.txt"
+        data = "\n".join(to_remove) + "\n"
+        to_remove_file.write_text(data)
 
     def migrate_rds(self, source: TerraformCli, identifier: str) -> None:
         """Migrate rds resources."""
@@ -762,7 +788,7 @@ class TerraformCli:
         if len(obj_replacements):
             raise Exception("There are objects going to be replaced")
 
-        self._remove_from_old_state(rds_name, new_resources, old_resources)
+        self._remove_from_old_state(source, rds_name, new_resources, old_resources)
 
         # assert (
         #     len(to_remove_resources._get_resources_by_type("aws_db_parameter_group"))
@@ -792,21 +818,17 @@ class TerraformCli:
                 )
                 rich_print("ERv2:")
                 rich_print(
-                    "\n".join(
-                        [
-                            f"  {i}: {r.address}"
-                            for i, r in enumerate(destination_resources, start=1)
-                        ]
-                    )
+                    "\n".join([
+                        f"  {i}: {r.address}"
+                        for i, r in enumerate(destination_resources, start=1)
+                    ])
                 )
                 rich_print("Terraform:")
                 rich_print(
-                    "\n".join(
-                        [
-                            f"  {i}: {r.address}"
-                            for i, r in enumerate(source_resources, start=1)
-                        ]
-                    )
+                    "\n".join([
+                        f"  {i}: {r.address}"
+                        for i, r in enumerate(source_resources, start=1)
+                    ])
                 )
                 if not Confirm.ask("Would you like to continue anyway?", default=False):
                     return
@@ -845,3 +867,57 @@ class TerraformCli:
             )
 
         self.commit(source)
+
+
+class LocalBackendHelper:
+    def __init__(self, tf_path: Path, tf_conf_file: str, tf_state_file: str) -> None:
+        self._path = tf_path
+        self.tf_conf_file = tf_conf_file
+        self.state_file = tf_state_file
+        self.local_backend_path = self._path / ".local_backend"
+
+    def init(self) -> None:
+        self._create_local_backend_directory()
+        self._copy_conf_file()
+        self._remove_backend_from_tf_config()
+        self._create_local_tf_backend_file()
+        self._copy_state_file()
+
+    def _create_local_backend_directory(self) -> None:
+        self.local_backend_path.mkdir(exist_ok=True)
+
+    def _copy_conf_file(self) -> None:
+        conf_file = self._path / self.tf_conf_file
+        conf_file_local = self.local_backend_path / self.tf_conf_file
+        conf_file_local.write_text(conf_file.read_text())
+
+    def _copy_state_file(self) -> None:
+        state_file = self._path / "state.json"
+        state_file_local = self.local_backend_path / "state.json"
+        state_file_local.write_text(state_file.read_text())
+
+    def _remove_backend_from_tf_config(self) -> None:
+        """Remove the backend from the terraform configuration."""
+
+        with open(self.local_backend_path / self.tf_conf_file, encoding="utf-8") as f:
+            conf = json.load(f)
+
+        conf["terraform"].pop("backend")
+
+        with open(
+            self.local_backend_path / self.tf_conf_file, mode="w", encoding="utf-8"
+        ) as f:
+            json.dump(conf, f, indent=2)
+
+    def _create_local_tf_backend_file(self) -> None:  # pragma: no cover
+        """Create a local backend file."""
+        backend_file = self.local_backend_path / "backend.tf"
+        backend_file.write_text(
+            f"""
+            terraform {{
+              backend "local" {{
+                path = "{self.local_backend_path}/state.json"
+              }}
+            }}
+            """
+        )
