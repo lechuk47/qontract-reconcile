@@ -1,6 +1,10 @@
 from unittest.mock import create_autospec
 
-from reconcile.saas_auto_promotions_manager.integration import SaasAutoPromotionsManager
+from reconcile.saas_auto_promotions_manager.dependencies import Dependencies
+from reconcile.saas_auto_promotions_manager.integration import (
+    SaasAutoPromotionsManager,
+    SaasAutoPromotionsManagerParams,
+)
 from reconcile.saas_auto_promotions_manager.merge_request_manager.batcher import (
     Batcher,
 )
@@ -38,18 +42,27 @@ def test_integration_test(secret_reader: SecretReaderBase):
         mr_parser=create_autospec(spec=MRParser),
         renderer=create_autospec(spec=Renderer),
     )
-    manager = SaasAutoPromotionsManager(
-        deployment_state=create_autospec(spec=PromotionState),
-        s3_exporter=create_autospec(spec=S3Exporter),
+    dependencies = Dependencies(
+        vcs=vcs,
+        merge_request_manager_v2=merge_request_manager_v2,
         saas_file_inventory=SaasFilesInventory(
             saas_files=[], thread_pool_size=1, secret_reader=secret_reader
         ),
-        vcs=vcs,
-        merge_request_manager_v2=merge_request_manager_v2,
-        thread_pool_size=1,
-        dry_run=False,
+        deployment_state=create_autospec(spec=PromotionState),
+        s3_exporter=create_autospec(spec=S3Exporter),
+        secret_reader=secret_reader,
+        saas_deploy_state=create_autospec(spec=PromotionState),
+        sapm_state=create_autospec(spec=PromotionState),
     )
-    manager.reconcile()
+    params = SaasAutoPromotionsManagerParams(
+        thread_pool_size=1,
+        env_name=None,
+        app_name=None,
+    )
+    manager = SaasAutoPromotionsManager(
+        params=params,
+    )
+    manager.reconcile(dependencies=dependencies, thread_pool_size=1, dry_run=False)
 
     vcs.close_app_interface_mr.assert_not_called()
     vcs.open_app_interface_merge_request.assert_not_called()
